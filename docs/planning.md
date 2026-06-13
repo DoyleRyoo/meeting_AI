@@ -19,6 +19,177 @@
 - 업무 플랫폼 : 기업이 협업을 하기 위해 사용하는 협업 프로그램
 - 컴펌 : AI의 회의 요약과 개별 업무 내용 확인 및 공유을 정하는 작업
 
+
+## 프로젝트 네이밍 규칙 가이드
+
+---
+
+## 기본 원칙
+
+### 1. 프로젝트마다 스타일 통일
+
+| 언어        | 규칙                   |
+| ---------- | ---------------------- |
+| JavaScript | camelCase              |
+| Java       | camelCase + PascalCase |
+| Python     | camelCase              |
+| 폴더        | kebab-case            |
+| 외 파일     | camelCase              |
+
+#### React 규칙
+
+* React 컴포넌트 → PascalCase
+* 일반 파일 / Hook → camelCase
+
+#### JavaScript 규칙
+
+* 모두 → camelCase
+
+#### Spring Boot (Java) 규칙
+
+* Class, DTO → PascalCase
+* 메서드 → camelCase
+
+#### Python 규칙
+
+* 모두 → camelCase
+
+### 2. 의미가 명확해야 한다
+
+```js
+getData() ❌
+getUserProfile() ✅
+```
+
+### 3. 축약 금지
+
+```js
+usrInfo ❌
+userInfo ✅
+```
+
+### 4. 동사 + 명사 구조 (함수)
+
+```js
+getUser()
+createUser()
+updateProfile()
+deleteMessage()
+```
+
+### 5. 일관성 유지
+
+* camelCase / snake_case 혼용 금지
+* 프로젝트 전체에서 하나의 규칙만 사용
+
+## 📁 폴더 & 파일 네이밍
+
+### Frontend (React)
+
+#### 폴더
+
+```text
+user-profile/
+chat-window/
+components/
+```
+
+#### 파일
+
+```text
+UserProfile.jsx
+ChatWindow.jsx
+apiClient.js
+useAuth.js
+```
+
+## 변수 네이밍 (JavaScript)
+
+### 변수 (camelCase)
+
+```js
+const userName = "kim";
+const isLoggedIn = true;
+const chatMessageList = [];
+```
+
+## 함수 네이밍
+
+### 기본 구조: 동사 + 명사 (camelCase)
+
+```js
+getUser()
+createUser()
+updateProfile()
+deleteMessage()
+```
+
+### 이벤트 함수 (camelCase)
+
+```js
+handleClick()
+handleSubmit()
+handleChange()
+```
+
+### API 함수 (camelCase)
+
+```js
+fetchUser()
+fetchChatMessages()
+postMessage()
+```
+
+## Spring Boot (Java)
+
+### 클래스 (PascalCase)
+
+```java
+UserController
+UserService
+UserRepository
+ChatService
+```
+
+### 메서드 (camelCase)
+
+```java
+getUser()
+createUser()
+updateUser()
+deleteUser()
+```
+
+### DTO (PascalCase)
+
+```java
+UserRequestDto
+UserResponseDto
+ChatMessageDto
+```
+
+## Python (FastAPI)
+
+### 파일 / 함수 (camelCase)
+
+```python
+chatService.py
+vectorStore.py
+```
+
+```python
+def getUserProfile():
+def createMessage():
+def fetchChatHistory():
+```
+
+### 클래스 (camelCase)
+
+```python
+class ChatService:
+class UserRepository:
+```
+
 ## 구조
 ![alt text](image.png)
 
