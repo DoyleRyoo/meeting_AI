@@ -60,7 +60,7 @@ AI/
 
 ```
 
-# Clinet (frontend)
+# client (frontend)
 
 ### 기술 스택
 - React
