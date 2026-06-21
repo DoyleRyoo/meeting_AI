@@ -1,4 +1,4 @@
-# damlok_AI
+# damlok_ai
 
 ### 기술 스택
 
