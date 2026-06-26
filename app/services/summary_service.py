@@ -1,22 +1,25 @@
 import asyncio
 import json
 import os
+import re
 from collections.abc import Sequence
+from datetime import date
 from typing import TypeVar
 
 from openai import AsyncOpenAI, OpenAIError
 from pydantic import BaseModel, ValidationError
 import tiktoken
 
-from app.schemas import AnalyzeResponse, ChunkAnalysis
+from app.schemas import AnalyzeDebugResponse, AnalyzeResponse, ChunkAnalysis
 
 
 CHUNK_SYSTEM_PROMPT = """
 당신은 회의록 분석 전문가입니다.
 
-입력은 긴 회의록을 나눈 일부 구간입니다.
-제공된 구간만 근거로 상세 요약과 액션 아이템 후보를 추출하세요.
+입력은 태깅된 회의록을 나눈 일부 구간입니다.
+제공된 구간만 근거로 상세 요약, action_items, action_candidates를 추출하세요.
 추측하지 말고, 텍스트에서 확인할 수 없는 내용은 null 또는 "확인되지 않음"으로 작성하세요.
+JSON null이 필요한 필드에는 문자열 "null"을 절대 쓰지 마세요.
 다른 구간에서 최종 통합하므로 내용을 과도하게 축약하지 마세요.
 
 반드시 다음 JSON 구조로만 응답하세요.
@@ -35,7 +38,26 @@ CHUNK_SYSTEM_PROMPT = """
       "start_date": "YYYY-MM-DD 또는 null",
       "due_date": "YYYY-MM-DD 또는 null",
       "priority": "HIGH 또는 MEDIUM 또는 LOW",
-      "status": "미착수"
+      "status": "미착수",
+      "source_type": "DIRECTIVE 또는 PLAN 또는 SUGGESTION 또는 DISCUSSION",
+      "confidence": "HIGH 또는 MEDIUM 또는 LOW",
+      "evidence": "원문 근거 문장",
+      "duplicate_group_id": "중복 의심 그룹 id 또는 null"
+    }
+  ],
+  "action_candidates": [
+    {
+      "assignee_name": "담당자 이름 또는 null",
+      "assignee_email": "담당자 이메일 또는 null",
+      "task": "검토 후보",
+      "start_date": "YYYY-MM-DD 또는 null",
+      "due_date": "YYYY-MM-DD 또는 null",
+      "priority": "HIGH 또는 MEDIUM 또는 LOW",
+      "status": "미착수",
+      "source_type": "DIRECTIVE 또는 PLAN 또는 SUGGESTION 또는 DISCUSSION",
+      "confidence": "HIGH 또는 MEDIUM 또는 LOW",
+      "evidence": "원문 근거 문장",
+      "duplicate_group_id": "중복 의심 그룹 id 또는 null"
     }
   ]
 }
@@ -44,10 +66,25 @@ CHUNK_SYSTEM_PROMPT = """
 - 이 구간에서 확인되는 내용만 구체적으로 작성하세요.
 - objective에는 회의의 배경과 목적을, discussion에는 주요 쟁점과 의견을,
   decision에는 확정된 결정과 미결 사항을 구분해 작성하세요.
+- tagged_transcript 입력에서는 DISCUSSION, INFO, QUESTION, ANSWER를 discussion에 참고하세요.
+- tagged_transcript 입력에서는 DECISION 태그를 decision에 우선 참고하세요.
 - action_items가 없으면 빈 배열 [] 로 작성하세요.
-- 발언에서 실행 주체와 할 일이 드러난 항목만 action_items로 추출하세요.
-- 담당자가 명확하지 않으면 assignee_name과 assignee_email을 null로 작성하세요.
-- 날짜가 명확하지 않으면 null로 작성하세요.
+- action_candidates가 없으면 빈 배열 [] 로 작성하세요.
+- action_items에는 ACTION 태그 중 실제 실행 지시성이 높은 항목을 넣으세요. 담당자가 없어도 명확한 지시나 계획이면 assignee_name을 null로 두고 포함할 수 있습니다.
+- action_candidates에는 정책 방향, 검토 주제, 개선 필요성, 담당자가 불분명하지만 실행 가능성이 있는 항목을 넣으세요.
+- action_items와 action_candidates는 관리자/프론트 검토용 AI 응답입니다. source_type, confidence, evidence, duplicate_group_id는 DB 저장용이 아닙니다.
+- source_type은 DIRECTIVE, PLAN, SUGGESTION, DISCUSSION 중 하나만 사용하세요.
+- confidence는 HIGH, MEDIUM, LOW 중 하나만 사용하세요. HIGH는 실제 Task 저장 가능, MEDIUM은 후보 검토 필요, LOW는 단순 논의에 가깝다는 뜻입니다.
+- evidence에는 원문 근거 문장을 짧게 넣으세요.
+- 태그가 없는 입력에서는 발언에서 실행 후보가 드러난 항목을 추출하세요.
+- 담당자가 명확하지 않으면 assignee_name을 null로 작성하고, 이메일이 명확하지 않으면 assignee_email을 null로 작성하세요.
+- 날짜가 명확하지 않거나 없으면 start_date와 due_date를 null로 작성하세요.
+- 연도, 월, 일이 모두 명확한 날짜만 YYYY-MM-DD로 작성하세요.
+- 연도가 확인되지 않은 "이번 주 금요일", "3월 21일" 같은 표현은 추정하지 말고 null로 작성하세요.
+- 단, "오늘", "내일", "모레"처럼 현재 날짜 기준으로 날짜가 하나로 확정되는 표현은 입력에 제공된 현재 날짜 기준으로 계산할 수 있습니다.
+- 회의일, 월초, 월말, 분기말, 연말, 사업 종료일, 과거 문맥을 근거로 날짜를 보정하거나 새로 만들지 마세요.
+- assignee_name, assignee_email, start_date, due_date에는 문자열 "null"을 쓰지 말고 JSON null을 사용하세요.
+- 비슷해 보인다는 이유로 action_items나 action_candidates를 임의 병합하거나 제거하지 마세요. 대상과 행동이 사실상 같은 경우만 중복으로 판단하고, 제거하지 말고 duplicate_group_id로 묶으세요.
 - priority는 HIGH, MEDIUM, LOW 중 하나만 사용하세요.
 - 완료 또는 진행 중이라고 명시되지 않은 액션 아이템의 status는 "미착수"로 작성하세요.
 """
@@ -56,7 +93,7 @@ MERGE_SYSTEM_PROMPT = """
 당신은 여러 회의록 구간의 분석 결과를 하나로 통합하는 회의록 분석 전문가입니다.
 
 입력으로 제공된 구간별 분석만 근거로 최종 결과를 작성하세요.
-중복되는 내용과 액션 아이템은 하나로 합치고, 서로 다른 내용은 누락하지 마세요.
+서로 다른 내용, action_items, action_candidates를 누락하지 마세요.
 추측하거나 새로운 담당자, 날짜, 결정 사항을 추가하지 마세요.
 
 규칙:
@@ -64,8 +101,17 @@ MERGE_SYSTEM_PROMPT = """
 - objective에는 전체 회의의 배경과 목적을 작성하세요.
 - discussion에는 주요 쟁점, 의견, 근거와 미결 사항을 종합하세요.
 - decision에는 실제로 확정된 결정 사항만 작성하세요.
-- 동일한 task, 담당자, 날짜를 가진 액션 아이템은 하나로 합치세요.
+- DISCUSSION, INFO, QUESTION, ANSWER는 discussion에 참고하고, DECISION은 decision에 우선 반영하세요.
+- action_items에는 실제 실행 지시성이 높은 항목을 유지하세요.
+- action_candidates에는 정책 방향, 검토 주제, 개선 필요성, 담당자가 불분명하지만 실행 가능성이 있는 항목을 유지하세요.
+- action_items와 action_candidates는 관리자/프론트 검토용 AI 응답입니다. source_type, confidence, evidence, duplicate_group_id는 DB 저장용이 아닙니다.
+- 비슷해 보인다는 이유로 action_items나 action_candidates를 임의 병합하거나 제거하지 마세요. 대상과 행동이 사실상 같은 경우만 중복으로 판단하고, 제거하지 말고 duplicate_group_id로 묶으세요.
 - 담당자나 날짜가 확인되지 않은 값은 null을 유지하세요.
+- 연도, 월, 일이 모두 명확한 날짜만 YYYY-MM-DD로 작성하세요.
+- 연도가 확인되지 않은 날짜 표현은 추정하지 말고 null을 유지하세요.
+- 단, "오늘", "내일", "모레"처럼 현재 날짜 기준으로 날짜가 하나로 확정되는 표현은 입력에 제공된 현재 날짜 기준으로 계산할 수 있습니다.
+- 회의일, 월초, 월말, 분기말, 연말, 사업 종료일, 과거 문맥을 근거로 날짜를 보정하거나 새로 만들지 마세요.
+- assignee_name, assignee_email, start_date, due_date에는 문자열 "null"을 쓰지 말고 JSON null을 사용하세요.
 - meeting_summary는 상세 요약을 대신하지 않으며, 벡터 검색용 1문장으로 짧게 작성하세요.
 """
 
@@ -73,6 +119,20 @@ ModelT = TypeVar("ModelT", bound=BaseModel)
 DEFAULT_CHUNK_SIZE = 6_000
 DEFAULT_CHUNK_OVERLAP = 300
 DEFAULT_MAX_CONCURRENCY = 3
+SECTION_TAG_PATTERN = re.compile(
+    r"^\s*(\[의전/잡담\]|\[배경설명\]|\[핵심논의\]|\[결정사항\]|\[액션후보\]|\[질문\]|\[응답\]|\[보류/추후검토\]|ACTION:|DECISION:|DISCUSSION:|QUESTION:|ANSWER:|INFO:|CHITCHAT:)"
+)
+SUMMARY_PRIORITY_TAGS = {
+    "[핵심논의]",
+    "[결정사항]",
+    "[액션후보]",
+    "ACTION:",
+    "DECISION:",
+    "DISCUSSION:",
+    "QUESTION:",
+    "ANSWER:",
+    "INFO:",
+}
 
 
 class SummaryServiceError(Exception):
@@ -128,6 +188,31 @@ def _chunk_text(text: str, model_name: str) -> list[str]:
     return chunks
 
 
+def select_summary_sections(text: str) -> str:
+    priority_blocks = []
+    has_section_tags = False
+    for block in re.split(r"\n{2,}", text):
+        stripped = block.strip()
+        if not stripped:
+            continue
+        match = SECTION_TAG_PATTERN.match(stripped)
+        if not match:
+            continue
+        has_section_tags = True
+        if match.group(1) in SUMMARY_PRIORITY_TAGS:
+            priority_blocks.append(stripped)
+
+    if priority_blocks:
+        return "\n\n".join(priority_blocks)
+    if has_section_tags:
+        return text
+    return text
+
+
+def _current_date_text() -> str:
+    return date.today().isoformat()
+
+
 async def _request_structured_response(
     client: AsyncOpenAI,
     model_name: str,
@@ -166,7 +251,10 @@ async def _analyze_chunks(
 
     async def analyze_chunk(index: int, chunk: str) -> ChunkAnalysis:
         async with semaphore:
-            content = f"회의록 구간 {index + 1}/{len(chunks)}:\n\n{chunk}"
+            content = (
+                f"현재 날짜: {_current_date_text()}\n"
+                f"회의록 구간 {index + 1}/{len(chunks)}:\n\n{chunk}"
+            )
             return await _request_structured_response(
                 client,
                 model_name,
@@ -180,7 +268,9 @@ async def _analyze_chunks(
     )
 
 
-async def analyze_meeting(text: str) -> AnalyzeResponse:
+async def _analyze_meeting_parts(
+    text: str,
+) -> tuple[str, list[ChunkAnalysis], AnalyzeResponse]:
     model_name = os.getenv("MODEL_NAME", "gpt-4o-mini")
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
@@ -188,22 +278,44 @@ async def analyze_meeting(text: str) -> AnalyzeResponse:
 
     try:
         client = AsyncOpenAI(api_key=api_key)
-        chunks = _chunk_text(text, model_name)
+        summary_text = select_summary_sections(text)
+        chunks = _chunk_text(summary_text, model_name)
         if not chunks:
             raise SummaryServiceError("회의 전문이 비어 있습니다.")
 
         chunk_results = await _analyze_chunks(client, model_name, chunks)
         merge_content = json.dumps(
-            [result.model_dump(mode="json") for result in chunk_results],
+            {
+                "current_date": _current_date_text(),
+                "chunk_results": [
+                    result.model_dump(mode="json") for result in chunk_results
+                ],
+            },
             ensure_ascii=False,
         )
-        return await _request_structured_response(
+        result = await _request_structured_response(
             client,
             model_name,
             MERGE_SYSTEM_PROMPT,
             merge_content,
             AnalyzeResponse,
         )
+        return summary_text, chunk_results, result
 
     except OpenAIError as exc:
         raise SummaryServiceError("OpenAI API 요청에 실패했습니다.") from exc
+
+
+async def analyze_meeting(text: str) -> AnalyzeResponse:
+    _, _, result = await _analyze_meeting_parts(text)
+    return result
+
+
+async def analyze_meeting_debug(text: str) -> AnalyzeDebugResponse:
+    selected_summary_text, chunk_results, result = await _analyze_meeting_parts(text)
+    return AnalyzeDebugResponse(
+        chunk_count=len(chunk_results),
+        selected_summary_text=selected_summary_text,
+        chunks=chunk_results,
+        result=result,
+    )
